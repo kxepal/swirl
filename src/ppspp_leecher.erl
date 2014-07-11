@@ -76,8 +76,15 @@ start_link(Args, Swarm_Options) ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([{Type, Swarm_ID, State_Table}]) ->
-    {ok, State} = peer_core:init_server(Type, {Swarm_ID, State_Table}),
+init([{static, Swarm_ID, State_Table}]) ->
+    {ok, State} = peer_core:init_server(static, {Swarm_ID, State_Table}),
+    %% TODO MAYBE send initial HANDSHAKE to all the peers
+    {ok, State};
+
+init([{live, Swarm_ID, State_Table}]) ->
+    {ok, State} = peer_core:init_server(live, {Swarm_ID, State_Table}),
+    %% TODO send initial HANDSHAKE to all the peers in the live swarm to find
+    %% out the latest munro.
     {ok, State};
 
 init([{_Type, _Swarm_ID}, _Swarm_Options]) ->
@@ -90,15 +97,8 @@ init([{_Type, _Swarm_ID}, _Swarm_Options]) ->
 %%
 %% @end
 %%--------------------------------------------------------------------
-%% Use call to receive new data becuse so the next data packets are not sent
-%% untill the current one processed correctly.
-handle_call({newData, _Data}, _From, #peer{type=injector} = _State) ->
-    %% TODO : check if the NCHUNKS_PER_SIG number of data packets have arrived
-    %% and then create a new subtree and declare the new packets using HAVE
-    %% messages in the swarm.
-    ok;
 handle_call(Message, _From, State) ->
-    ?WARN("peer: unexpected call: ~p~n", [Message]),
+    ?WARN("leecher: unexpected call: ~p~n", [Message]),
     {stop, {error, {unknown_call, Message}}, State}.
 
 %%--------------------------------------------------------------------
@@ -110,103 +110,115 @@ handle_call(Message, _From, State) ->
 %%                                  {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-%% Msg is of the type :
-% [{channel,0},
-%  {peer, [{endpoint,"127.0.0.1:54181"},
-%          {peer,{127,0,0,1}},
-%          {port,54181},
-%          {transport,udp}]},
-%  {messages, [{handshake, [{channel,1107349116}, {options, orddict()}]},
-%              {have, [{have,Bin}]}]}
-% ]
 handle_cast(Msg, State) ->
-    {ok, New_State} = peer_core:update_state(seeder, Msg, State),
-    handle_msg(New_State#peer.type, Msg, New_State, []),
-    %% spwan(?MODULE, handle_msg, [{Type, Role}, Msg, State, []]),
-    {noreply, New_State}.
+    %% update the State with data of the peer from whom the Msg is recevied.
+    {ok, New_State}     = peer_core:update_state(leecher, Msg, State),
+    {ok, Updated_State} = handle_msg(New_State#peer.type, Msg, New_State, []),
+    {noreply, Updated_State}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Handle messages.
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-handle_msg(_, [], _State, _Reply) ->
-    %% TODO send packed message to the listener
+handle_msg(_, [], State, _Reply) ->
+    %% TODO send packed message to the listener.
+    %% TODO store peer state back into the ETS table.
     %% lists:reverse(lists:flatten(Reply)).
     %ppspp_datagram:pack(Reply)
-    ok;
+    {ok, State};
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% HANDSHAKE : returns [HANDSHAKE, HAVE, HAVE ...]
-%% Payload is expected to be an orddict.
+%% HANDSHAKE
 handle_msg(Type, [{handshake, Payload} | Rest], State, Reply) ->
-    {ok, Response} = ppspp_message:handle({Type, seeder},
+    %% TODO : discuss what will the leecher do with the HANDSHAKE msg.
+    {ok, Response} = ppspp_message:handle({Type , leecher},
                                           {handshake, Payload}, State),
     handle_msg(Type, Rest, State, [Response | Reply]);
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% ACK : updates the state of the peer in State_Table for DATA received
-handle_msg(Type, [{ack, Payload} | Rest], State, Reply) ->
-    {ok, New_State} = ppspp_message:handle({Type, seeder},
-                                           {ack, Payload}, State),
+%% ACK
+handle_msg(Type, [{ack,_Payload} | Rest], State, Reply) ->
+    ?WARN("~p ~p: unexpected ACK message ~n", [Type, leecher]),
+    handle_msg(Type, Rest, State, Reply);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% HAVE
+handle_msg(static, [{have, Payload} | Rest], State, Reply) ->
+    %% TODO discuss how to prepare REQUEST for DATA from multiple peers. 
+    {ok, Response} = ppspp_message:handle({live, leecher},
+                                          {have, Payload}, State),
+    handle_msg(static, Rest, State, [Response | Reply]);
+
+handle_msg(live, [{have, Payload} | Rest], State, Reply) ->
+    %% HAVE in case of live stream will contain latest munro as Payload.
+    %% we store the highest Payload in the State and also Store the
+    %% corresponding peers that sent the have msg with that munro.
+    %% TODO : discuss when to accept the munor as the latest munro in the swarm
+    %% and prepare REQUEST msg.
+    {ok, New_State} = ppspp_message:handle({live, leecher},
+                                           {have, Payload}, State),
+    handle_msg(live, Rest, New_State, Reply);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% INTEGRITY
+handle_msg(Type, [{integrity, Payload} | Rest], State, Reply) ->
+    {ok, New_State} = ppspp_message:handle({Type, leecher},
+                                           {integrity, Payload}, State),
     handle_msg(Type, Rest, New_State, Reply);
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% HAVE : seeder should not receive HAVE messages
-handle_msg(Type, [{have,_Payload} | _Rest], State, _Reply) ->
-    ?WARN("~p ~p: unexpected HAVE message ~n", [Type, seeder]),
-    {noreply, State};
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% INTEGRITY : should not be received,
-handle_msg(Type, [{integrity, _Data} | Rest], State, Reply) ->
-    ?WARN("~p ~p: unexpected INTEGRITY message ~n", [Type, seeder]),
-    handle_msg(Type, Rest, State, Reply);
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% NO implementation
+%%%
+%% currently NO implementation
 handle_msg(Type, [{pex_resv4, _Data} | Rest], State, Reply) ->
-    ?WARN("~p ~p: no implemention for PEX_RESV4 message ~n", [Type, seeder]),
+    ?WARN("live_seeder: unexpected pex_resv4 message ~n", []),
     handle_msg(Type, Rest, State, Reply);
 handle_msg(Type, [{pex_req, _Data} | Rest], State, Reply) ->
-    ?WARN("~p ~p: no implementation for PEX_REQ message ~n", [Type, seeder]),
+    ?WARN("live_seeder: unexpected pex_req message ~n", []),
     handle_msg(Type, Rest, State, Reply);
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% SIGNED_INTEGRITY : should not be received 
+%% Seeder should not receive signed_integrity message.
+%% TODO incomplete
+handle_msg(live, [{signed_integrity, Payload} | Rest], State, Reply) ->
+    {ok, New_State} = ppspp_message:handle({live, leecher},
+                                           {signed_integrity, Payload}, State),
+    handle_msg(live, Rest, New_State, Reply);
+
 handle_msg(Type, [{signed_integrity, _Data} | Rest], State, Reply) ->
-    ?WARN("~p ~p: unexpected SIGNED_INTEGRITY message ~n", [Type, seeder]),
+    ?WARN("~p leecher: unexpected signed_integrity message ~n", [Type]),
     handle_msg(Type, Rest, State, Reply);
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% REQUEST
-handle_msg(Type, [{request, Payload} | Rest], State, Reply) ->
-    {ok, Response} = ppspp_message:handle({Type, seeder},
-                                          {request, Payload}, State) ,
-    handle_msg(Type, Rest, State, [Response | Reply]);
+handle_msg(Type, [{request,_Payload} | Rest], State, Reply) ->
+    ?WARN("~p leecher: unexpected REQUEST message ~n", [Type]),
+    handle_msg({Type, leecher}, Rest, State, Reply);
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% CANCEL : TODO kill the spawn process serving the DATA request for the peer.
-handle_msg({_Type, _Role}, [{cancel, _Data} | _Rest], State, _Reply) ->
-    {noreply, State};
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% CHOKE : should not be received .
-handle_msg(Type, [{choke, _Data} | Rest], State, Reply) ->
-    ?WARN("~p ~p: unexpected choke message ~n", [Type, seeder]),
+%% CANCEL
+%% TODO implement this 
+handle_msg(Type, [{cancel, _Data} | Rest], State, Reply) ->
+    ?WARN("~p leecher: unexpected CANCEL message ~n", [Type]),
     handle_msg(Type, Rest, State, Reply);
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% UNCHOKE : should not be received .
+%% CHOKE 
+handle_msg(Type, [{choke, _Data} | Rest], State, Reply) ->
+    ?WARN("~p leecher: unexpected choke message ~n", [Type]),
+    handle_msg(Type, Rest, State, Reply);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% UNCHOKE 
+%% TODO implement this 
 handle_msg(Type, [{unchoke, _Data} | Rest], State, Reply) ->
-    ?WARN("live_seeder: unexpected UNCHOKE message ~n", []),
+    ?WARN("~p leecher: unexpected choke message ~n", [Type]),
     handle_msg(Type, Rest, State, Reply);
 
 %% currently no implementation
-handle_msg(Type, [{pex_resv6, _Data} | Rest], State, Reply) ->
-    ?WARN("~p ~p: unexpected PEX_RESV6 message ~n", [Type, seeder]),
-    handle_msg(Type, Rest, State, Reply);
-handle_msg(Type, [{pex_rescert, _Data} | Rest], State, Reply) ->
-    ?WARN("~p ~p: unexpected PEX_RESCERT message ~n", [Type, seeder]),
-    handle_msg(Type, Rest, State, Reply).
+handle_msg({Type, Role}, [{pex_resv6, _Data} | Rest], State, Reply) ->
+    ?WARN("live_seeder: unexpected pex_resv6 message ~n", []),
+    handle_msg({Type, Role}, Rest, State, Reply);
+handle_msg({Type, Role}, [{pex_rescert, _Data} | Rest], State, Reply) ->
+    ?WARN("live_seeder: unexpected pex_rescert message ~n", []),
+    handle_msg({Type, Role}, Rest, State, Reply).
 
 %%--------------------------------------------------------------------
 %% @doc

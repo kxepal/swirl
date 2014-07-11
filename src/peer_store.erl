@@ -20,11 +20,13 @@
 %% @end
 -module(peer_state).
 
--type peer()  :: string().
--type state() :: list().
+-type peer()  :: {string(), seeder | leecher}.
+-type state() :: orddict:orddict().
+-type server() :: seeder | leecher.
 
 -export([init/1,
          insert/2,
+         insert_new/2,
          lookup/2,
          is_member/2,
          delete/2,
@@ -56,8 +58,15 @@ insert(Table, {Peer, State}) ->
 %% @doc Insert the tuple {bin number, hash, chunk} if the bin number is not
 %% already in the tree.
 %% @end
-%-spec insert_new(atom(), {bin(), hash(), binary()}) -> true | false.
-%insert_new(Table, {Bin, Hash, Data}) ->
+-spec insert_new(atom(), {string(), server()}) -> true | false.
+insert_new(Table, {Peer, Server_Type}) ->
+    peer_store:insert(Table,
+    {{Peer, Server_Type},
+     %% range : stores the range of chunks downloaded from this peer or
+     %% downloaded by this peer depending on Server_Type.
+     %% integrity : stores integrity messages from the peer untill
+     %% corresponding data packets arrive.
+     orddict:new()}).
     %ets:insert_new(Table, {Bin, Hash, Data}).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -68,7 +77,7 @@ insert(Table, {Peer, State}) ->
 lookup(Table, Peer) ->
     case ets:lookup(Table, Peer) of
         [{_, State}] -> {ok, State};
-        []           -> {error, peer_state_not_found}
+        []           -> {error, peer_store_state_not_found}
     end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
