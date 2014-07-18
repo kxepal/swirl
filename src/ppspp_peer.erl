@@ -92,6 +92,7 @@ init([{_Type, _Swarm_ID}, _Swarm_Options]) ->
 %%--------------------------------------------------------------------
 %% Use call to receive new data becuse so the next data packets are not sent
 %% untill the current one processed correctly.
+%% TODO check this later
 handle_call({newData, _Data}, _From, #peer{type=injector} = _State) ->
     %% TODO : check if the NCHUNKS_PER_SIG number of data packets have arrived
     %% and then create a new subtree and declare the new packets using HAVE
@@ -110,7 +111,7 @@ handle_call(Message, _From, State) ->
 %%                                  {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-%% Msg is of the type :
+%% Msg is dict of the type :
 % [{channel,0},
 %  {peer, [{endpoint,"127.0.0.1:54181"},
 %          {peer,{127,0,0,1}},
@@ -122,6 +123,7 @@ handle_call(Message, _From, State) ->
 handle_cast(Msg, State) ->
     {ok, New_State} = peer_core:update_state(seeder, Msg, State),
     handle_msg(New_State#peer.type, Msg, New_State, []),
+    %% TODO spwan the handle_msg and pass the decoded msg as argument.
     %% spwan(?MODULE, handle_msg, [{Type, Role}, Msg, State, []]),
     {noreply, New_State}.
 
@@ -131,10 +133,11 @@ handle_cast(Msg, State) ->
 handle_msg(_, [], _State, _Reply) ->
     %% TODO send packed message to the listener
     %% lists:reverse(lists:flatten(Reply)).
-    %ppspp_datagram:pack(Reply)
+    % ppspp_datagram:pack(Reply)
+    % put the peer_state back into the ETS table.
     ok;
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% HANDSHAKE : returns [HANDSHAKE, HAVE, HAVE ...]
 %% Payload is expected to be an orddict.
 handle_msg(Type, [{handshake, Payload} | Rest], State, Reply) ->

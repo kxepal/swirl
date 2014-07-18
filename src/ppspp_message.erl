@@ -20,8 +20,8 @@
 
 -module(ppspp_message).
 %-include("ppspp.hrl").
--include("ppspp_records.hrl").
--include("swirl.hrl").
+-include("../include/ppspp_records.hrl").
+-include("../include/swirl.hrl").
 
 -ifdef(TEST).
 -include_lib("proper/include/proper.hrl").
@@ -32,7 +32,8 @@
 -export([unpack/1,
          pack/1,
          validate_message_type/1,
-         handle/3]).
+         handle/3,
+         prepare/3]).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% api
@@ -150,13 +151,8 @@ parse(_, _Rest) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% HANDLE MESSAGES
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%-spec ... handle takes a tuple of {type, message_body} where body is a
-%%    parsed orddict message and returns either
-%%    {error, something} or tagged tuple for the unpacked message
-%%    {ok, reply} where reply is probably an orddict to be sent to the
-%%    alternate peer.
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%-----------------------------------------------------------------------------
 %% HANDSHAKE
 %% The payload of the HANDSHAKE message is a channel ID (see Section 3.11) and
 %% a sequence of protocol options.  Example options are the content integrity
@@ -168,37 +164,62 @@ handle({Type, seeder}, {handshake, Payload}, State) ->
     {ok, [HANDSHAKE | HAVE]};
 
 handle({_Type, leecher}, {handshake,_Payload},_State) ->
-    %% TODO : discuss what will the leecher do with the HANDSHAKE msg.
+    %% leecher will set any undefined options in State using HANDSHAKE.
+    %% Currently all the options are pre-set in the init function, so if we
+    %% need to use the handshake options recevied only then we need to
+    %% implement this.
     {ok, []};
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%------------------------------------------------------------------------------
 %% ACK : Update peer_state in State.
 handle(_Type_Role, {ack, Payload}, State) ->
-    %% TODO discuss whether to update the ack_range in ETS here itself or not.
     Bin            = peer_core:fetch(range, Payload),
     Peer_State     = State#peer.peer_state,
     New_Ack_Range  = peer_core:update_ack_range(Bin, Peer_State),
     New_Peer_State = orddict:store(ack_range, New_Ack_Range, Peer_State),
-    {ok, State#peer{peer_state = New_Peer_State}};
+    {ok, State#peer{peer_state=New_Peer_State}};
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%------------------------------------------------------------------------------
 %% HAVE
 handle({static, leecher}, {have, _Payload},_State) ->
     %% TODO : discuss how to request RANGE
     ok;
-handle({live, leecher}, {have, Payload}, #peer{state=tune_in} = State) ->
-    %% HAVE in live stream should be piggybacked so as to figure out the latest
-    %% munro hash.
-    %% TODO discuss if address of peers containing the highest munro needs to
-    %% be stored.
-    %% TODO discuss how to stop piggybacking and make REQUEST for the latest
-    %% data
-    Latest_Munro    = peer_core:fetch(range, Payload),
-    %% update the munro if latest munro is greater than the current one.
-    New_Server_Data = peer_core:piggyback(have, {State, Latest_Munro}),
-    {ok, State#peer{server_data = New_Server_Data}};
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+handle({live, leecher}, {have, Payload}, #peer{state=tune_in} = State) ->
+    %% HAVE in live stream is piggybacked to figure out latest munro hash.
+    %% TODO discuss if address of peers sending highest munro needs to be
+    %% stored.
+    %% Switch from tune_in to streaming when 2/3 of the peers have replied
+    %% with HAVE messages.
+    Latest_Munro  = peer_core:fetch(range, Payload),
+    %% update the munro if latest munro is greater than the current one.
+    Server_Data   = peer_core:piggyback(have, {State, Latest_Munro}),
+    case peer_core:is_stable(Server_Data) of
+        true  ->
+            New_Server_Data = orddict:erase(stable_munro,
+                                            State#peer.server_data),
+            %% prepare request message for the highest munro
+            {ok, REQUEST} = prepare(live,
+                                    {request,
+                                     orddict:fetch(latest_munro, Server_Data)},
+                                    State),
+            {ok, State#peer{state=streaming, server_data=New_Server_Data},
+                 REQUEST};
+        false ->
+            Counter         = orddict:fetch(stable_munro, Server_Data)-1,
+            New_Server_Data = orddict:store(stable_munro, Counter, Server_Data),
+            {ok, State#peer{server_data=New_Server_Data}}
+    end;
+
+%% TODO confirm if the expression : #peer{state=streaming} =_State will work !
+%% In case leecher is already in the streaming state any new have will be new
+%% data injected into the swarm
+handle({live, leecher}, {have, Payload}, #peer{state=streaming} = State) ->
+    New_Munro     = peer_core:fetch(range, Payload),
+    {ok, REQUEST} = prepare(live, {request, New_Munro}, State),
+    {ok, State, REQUEST};
+
+%%------------------------------------------------------------------------------
 %% INTEGRITY
 %% TODO figure out how to handle integrity messages. The leecher will recevive
 %% integrity message which can span multiple chunks so we need to piggybank
@@ -213,29 +234,27 @@ handle({live, leecher}, {integrity, Payload}, State) ->
     New_Peer_State  = peer_core:piggyback(integrity, {State, Bin, Hash}),
     {ok, State#peer{peer_state = New_Peer_State}};
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%------------------------------------------------------------------------------
 %% SIGNED_INTEGRITY
 handle({live, leecher}, {signed_integrity, Payload}, State) ->
-    Munro_Root = peer_core:fetch(range, Payload),
-    Peer_State = State#peer.peer_state,
+    Munro_Root      = peer_core:fetch(range, Payload),
+    Peer_State      = State#peer.peer_state,
+    {_, Munro_Hash} = lists:keyfind(Munro_Root, 1, orddict:find(integrity,
+                                                                Peer_State)),
+    Signature       = peer_core:fetch(signature, Payload),
+    Public_Key      = (State#peer.options)#options.ppspp_swarm_id,
 
-    %%
-    Munro_Hash = peer_core:fetch(Munro_Root,orddict:find(integrity,Peer_State)),
-    Signature  = peer_core:fetch(signature, Payload),
-    Public_Key = (State#peer.options)#options.ppspp_swarm_id,
-
-    %% verify the signature of the munro hash. we use none becoz Munro Hash is
-    %% sha hash.
-    true       = public_key:verify(Munro_Hash, none, Signature, Public_Key),
-    mtree_store:insert(State#peer.mtree, {Munro_Root, Munro_Hash, empty}),
-
+    %% verify signature of the munro hash. we use none becoz Munro is sha hash.
+    true = public_key:verify(Munro_Hash, none, Signature, Public_Key),
+    %% NOTE : leecher stores Signature to help other peers in secure tune_in.
+    mtree_store:insert(State#peer.mtree, {Munro_Root, Munro_Hash, Signature}),
     %% remove the Munro_Root from integrity.
-    New_Integrity = peer_core:remove(Munro_Root, orddict:find(integrity,
-                                                              Peer_State)),
+    New_Integrity  = lists:keydelete(Munro_Root, 1, orddict:fetch(integrity,
+                                                                  Peer_State)),
     New_Peer_State = orddict:store(integrity, New_Integrity, Peer_State),
     {ok, State#peer{peer_state = New_Peer_State}};
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%------------------------------------------------------------------------------
 %% REQUEST
 handle({static, _}, {request, [_Start, _End]},_State) ->
     %% TODO implement static code.
@@ -258,45 +277,15 @@ handle(_Type_Role, Message,_State) ->
     {ok, ppspp_message_handler_not_yet_implemented}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% LOCAL INTERNAL FUNCTIONs
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% @doc handle_request/3 : REQ_List and return value will be as follows
-%% REQ_List (live): [Munro_Root1, Leaf_bin ... , Munro_Root2, Leaf_bins ..]
-%% Returns (live) : [INTEGRITY, SIGNED_INTEGRITY, INTEGRITY, DATA, ..] messages
-%% REQ_List (static) : [Leaf_bin, ...]
-%% Returns (static)  : [INTEGRITY, DATA, INTEGRITY, DATA, ...] messages
-%% @end
-process_request(_, [], Acc) ->
-    lists:reverse(Acc);
-process_request({Type, State}, [Leaf | Rest], Acc) when Leaf rem 2 =:= 0 ->
-    %% TODO get the uncle hashes
-    %% TODO decide DICUSS when to get all_uncles and when to get only uncles
-    %% based on previous ACKs.
-    Uncle_Hashes = peer_core:fetch_uncles(Type, State, Leaf),
-    INTEGRITY    = lists:map(
-                     fun({Uncle, Hash}) ->
-                        {ok, Integrity} = prepare(live, {integrity, Uncle,
-                                                        Hash}, State),
-                        Integrity
-                     end, Uncle_Hashes),
-    {ok, DATA}   = prepare(live, {data, Leaf}, State),
-    process_request({live, State}, Rest, lists:flatten([DATA,INTEGRITY | Acc]));
-process_request({live, State}, [Munro_Root | Rest], Acc) ->
-    {ok, INTEGRITY}        = prepare(live, {integrity, Munro_Root,
-                                            orddict:new()}, State),
-    {ok, SIGNED_INTEGRITY} = prepare(live, {signed_integrity, Munro_Root,
-                                            orddict:new()}, State),
-    process_request({live, State}, Rest, [SIGNED_INTEGRITY, INTEGRITY | Acc]).
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% PREPARE MESSAGES
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%
 %% HANDSHAKE message is of the sort :
-%% {handshake, [{channel, }, {options, [{}, {}, ...]}]
-prepare(Type, {handshake,_Payload}, State) ->
+%% {handshake, [{channel, [{source, Channel_Id}, {destination, Channel_Id}]},
+%%              {options, [{}, {}, ...]}]
+prepare(Type, {handshake, Payload}, State) ->
+    {source, Channel_Id} = lists:keyfind(source, 1, orddict:fetch(channel,
+                                                                  Payload)),
     Sub_Options =
       [ {ppspp_swarm_id, (State#peer.options)#options.ppspp_swarm_id},
         {ppspp_version,  (State#peer.options)#options.ppspp_version},
@@ -310,7 +299,7 @@ prepare(Type, {handshake,_Payload}, State) ->
          (State#peer.options)#options.ppspp_merkle_hash_function}],
 
     %% Add LIVE streaming options incase the seeder is in live stream swarm.
-    Options_List =
+    Options =
     if
         Type =:= live orelse Type =:= injector ->
             [{ppspp_live_signature_algorithm,
@@ -321,19 +310,17 @@ prepare(Type, {handshake,_Payload}, State) ->
         true -> Sub_Options
     end,
 
-    Options = orddict:from_list(Options_List),
     %% TODO : allocate free channel & store it in Payload as source channel id
-    %% TODO : discuss how to get the free Channel id
-    Channel  = not_implemented,
+    Channel  = [{source, not_implemented}, {destination, Channel_Id}],
     {ok, {handshake, orddict:from_list([{channel, Channel},
                                         {options, Options}])}};
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% ACK : {ack, [{range, [{Start,End}]}]
-prepare(_Type, {ack, [Start, End]}, _State) ->
-    {ok, {ack, orddict:from_list(range, [{Start, End}])}};
+%%------------------------------------------------------------------------------
+%% ACK : {ack, [{range, Bin}]
+prepare(_Type, {ack, Bin}, _State) ->
+    {ok, {ack, orddict:from_list([{range, Bin}])}};
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%------------------------------------------------------------------------------
 %% HAVE : {have, [{range, Bin}]
 prepare(static, {have,_Payload}, State) ->
     %% {ok, Start, End} = mtree:get_data_range(State#state.mtree),
@@ -345,24 +332,22 @@ prepare(_Live,  {have,_Payload}, State) ->
     {ok, Munro_Root, _} = mtree:get_latest_munro(State#peer.mtree),
     {ok, [{have, orddict:from_list([{range, Munro_Root}])}]};
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%------------------------------------------------------------------------------
 %% REQUEST : {request, [{range, Bin}]}
-%% TODO change the range to bins
 prepare(_Type, {request, Bin}, _State) ->
     {ok, {request, orddict:from_list([{range, Bin}])}};
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%------------------------------------------------------------------------------
 %% DATA : {data, [{range, Bin}, {timestamp, int}, {data, binary}]}
 prepare(_Type, {data, Chunk_ID}, State) ->
     {ok, _Hash, Data} = mtree_store:lookup(State#peer.mtree, Chunk_ID),
     %% TODO : add ntp module and filter out the timestamp.
-    Ntp_Timestamp = time, %% ntp:ask(),
-    %% CAUTION : the range is set to a Chunk_ID.
+    Ntp_Timestamp = peer_core:time(), %% not implemented yet !
     {ok, {data, orddict:from_list([{range, Chunk_ID},
                                    {timestamp, Ntp_Timestamp},
                                    {data, Data}])}};
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%------------------------------------------------------------------------------
 %% INTEGRITY : {integrity, [{range, Bin}, {hash, binary}]
 prepare(_Type, {integrity, Bin}, State) ->
     {ok, Hash, _Data} = mtree_store:lookup(State#peer.mtree, Bin),
@@ -371,16 +356,44 @@ prepare(_Type, {integrity, Bin}, State) ->
 prepare(_Type, {integrity, Bin, Hash}, _State) ->
     {ok, {integrity, orddict:from_list([{range, Bin}, {hash, Hash}])}};
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%------------------------------------------------------------------------------
 %% SIGNED_INTEGRITY : {signed_integrity, [{range, Bin},
 %%                                        {timestamp, Time},
 %%                                        {signature, binary}]
 prepare(live, {signed_integrity, Munro_Root}, State) ->
     {ok, _Hash, _Data} = mtree_store:lookup(State#peer.mtree, Munro_Root),
     %% TODO : add ntp module and filter out the timestamp.
-    Ntp_Timestamp = time, %% ntp:ask(),
-    Signture      = not_implemented,
-    %% CAUTION : the range is set to a Munro_Root.
+    Ntp_Timestamp         = peer_core:time(), %% not implemented yet !
+    {ok, _Hash, Signture} = mtree_store:lookup(State#peer.mtree, Munro_Root),
     {ok, {data, orddict:from_list([{range, Munro_Root},
                                    {timestamp, Ntp_Timestamp},
                                    {signature, Signture}])}}.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% LOCAL INTERNAL FUNCTIONs
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% @doc handle_request/3 : REQ_List and return value will be as follows
+%% REQ_List (live): [Munro_Root1, Leaf_bin ... , Munro_Root2, Leaf_bins ..]
+%% Returns (live) : [INTEGRITY, SIGNED_INTEGRITY, INTEGRITY, DATA, ..] messages
+%% REQ_List (static) : [Leaf_bin, ...]
+%% Returns (static)  : [INTEGRITY, DATA, INTEGRITY, DATA, ...] messages
+%% @end
+process_request(_, [], Acc) ->
+    lists:reverse(Acc);
+process_request({Type, State}, [Leaf | Rest], Acc) when Leaf rem 2 =:= 0 ->
+    %% get the uncles based on the previous ACKs
+    Uncle_Hashes = peer_core:fetch_uncles(Type, {State, Leaf}),
+    INTEGRITY    =
+    lists:map(
+      fun({Uncle, Hash}) ->
+            {ok, Integrity} = prepare(live, {integrity, Uncle, Hash}, State),
+            Integrity
+      end, Uncle_Hashes),
+    {ok, DATA}   = prepare(live, {data, Leaf}, State),
+    process_request({live, State}, Rest, lists:flatten([DATA,INTEGRITY | Acc]));
+process_request({live, State}, [Munro_Root | Rest], Acc) ->
+    {ok, INTEGRITY}        = prepare(live, {integrity, Munro_Root}, State),
+    {ok, SIGNED_INTEGRITY} = prepare(live, {signed_integrity,Munro_Root},State),
+    process_request({live, State}, Rest, [SIGNED_INTEGRITY, INTEGRITY | Acc]).

@@ -27,40 +27,43 @@
          update_ack_range/2,
          get_bin_list/3,
          fetch_uncles/3,
+         is_stable/1,
          fetch/2,
-         remove/2]).
+         time/0]).
+
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% @doc Initialize the gen_server.
 %% @end
 init_server(static, {Swarm_ID, State_Table}) ->
-    State =
-    #peer{
+    State = #peer{},
+    New_State =
+    State#peer{
        type         = static,
        state        = normal,
        server_data  = orddict:new(),
        peer_table   = State_Table,
        mtree        = Swarm_ID,
        options      =
-       #options{
+       (State#peer.options)#options{
           ppspp_swarm_id               = Swarm_ID, 
           ppspp_integrity_check_method = ?PPSPP_DEFAULT_INTEGRITY_CHECK_METHOD
          }
       },
-
-    {ok, State};
+    {ok, New_State};
 
 %% remaining types are live and injector. swarm options will remain same
 init_server(Type, {Swarm_ID, State_Table}) ->
-    State =
-    #peer{
+    State = #peer{},
+    New_State =
+    State#peer{
        type         = Type,
        state        = tune_in,
        server_data  = orddict:new(),
        peer_table   = State_Table,
        mtree        = Swarm_ID,
        options      =
-       #options{
+       (State#peer.options)#options{
           ppspp_swarm_id               = Swarm_ID, 
           ppspp_live_discard_window    = ?PPSPP_DEFAULT_LIVE_DISCARD_WINDOW,
           ppspp_integrity_check_method =
@@ -68,22 +71,22 @@ init_server(Type, {Swarm_ID, State_Table}) ->
           ppspp_live_signature_algorithm =
           ?PPSPP_DEFAULT_LIVE_SIGNATURE_ALGORITHM
          }
-      },
-    {ok, State}.
+    },
+    {ok, New_State}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% @doc update the State variable on the arrival of packets from different
 %% peers
 %% @end
 update_state(Server_Type, Msg, State) ->
-    %% TODO get the state of peer from peer_state table and store it in State
-    %% peer_state in ETS table will be of the form :{Peer_Name, Peer_State}
-    %% Where Peer_Name : {Peer_adderss, seeder} and
-    %% Peer_State : incase the peer is connected to seeder then Peer_State will
-    %% be orddict containing "range" of chunks ACKed and 
-    %% incase peer is connected to leecher orddict will contain "range"
-    %% received by the leecher from that peer and "integrity" messages recevied
-    %% from that peer
+    %% TODO get the state of peer from ETS table and store it in State.
+    %% peer_state in ETS table will be of the form : {Peer_Name, Peer_State}
+    %% Where Peer_Name : {Peer_adderss, seeder/leecher}.
+    %% Peer_State : incase the peer is seeder then Peer_State will be orddict
+    %% containing "range" of chunks ACKed and 
+    %% incase peer is leecher orddict will contain "range" received by the
+    %% leecher from that peer and "integrity" messages recevied from that peer
+    %%
     %% NOTE : if peer lookup fails then add the peer to the table with the new
     %% dict as follows :
     %% for leecher :
@@ -94,21 +97,25 @@ update_state(Server_Type, Msg, State) ->
     %%   orddict:from_list([{range, []}])
     %%
     %% State#peer.peer_state will contain ACKed Chunk_IDs
-    %% TODO add channel ID to the Peer
-    Peer        = orddict:key(endpoint, lists:keyfind(peer, 1, Msg)),
-    Peer_State  = get_peer_state(State#peer.peer_table, {Peer, Server_Type}),
-    New_State   = State#peer{peer = Peer, peer_state = Peer_State},
+    %% TODO add channel ID to the Peer and Peer_State.
+    %% TODO find out the correct way the peer address is sotred in the decoded
+    %% message
+    %% Address = "127.0.0.1:54181"
+    {endpoint, Address} = lists:keyfind(endpoint, orddict:find(peer, Msg)),
+    %%
+    Peer_State = get_peer_state(State#peer.peer_table, {Address, Server_Type}),
+    New_State  = State#peer{peer={Address, Server_Type}, peer_state=Peer_State},
     {ok, New_State}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% @doc get_peer_state/2 : get the state of the peer from the peer_table and if
 %% not present then initilize empty state and return that.
 %% @end
-get_peer_state(Table, {Peer, Server_Type}) ->
-    case peer_store:lookup(Table, {Peer, Server_Type}) of
+get_peer_state(Table, Peer) ->
+    case peer_store:lookup(Table, Peer) of
         {error, _}  ->
-            peer_store:insert_new(Table, {Peer, Server_Type}),
-            get_peer_state(Table, {Peer, Server_Type});
+            peer_store:insert_new(Table, Peer),
+            get_peer_state(Table, Peer);
         {ok, State} -> State
     end.
 
@@ -118,18 +125,18 @@ get_peer_state(Table, {Peer, Server_Type}) ->
 %% @end
 piggyback(have, {State, Latest_Munro}) ->
     Server_Data = State#peer.server_data,
-    case orddict:find(have, Server_Data) of
+    case orddict:find(latest_munro, Server_Data) of
         %% add "have" Payload if not present
         error   ->
-            New_Data = orddict:append(have, Latest_Munro, Server_Data),
-            orddict:append(have_peers, State#peer.peer, New_Data);
+            New_Data = orddict:store(latest_munro, Latest_Munro, Server_Data),
+            orddict:store(munro_peers, [State#peer.peer], New_Data);
         %% if Latest munro is more recent then overite the previous munro
-        [Munro] when Latest_Munro > Munro ->
-            New_Data = orddict:store(have, Munro, Server_Data),
-            orddict:store(have_peers, State#peer.peer, New_Data);
-        %% store the peers with the latest munro .
-        [Munro] when Latest_Munro =:= Munro ->
-            orddict:append(have_peers, State#peer.peer, Server_Data);
+        {ok, Munro} when Latest_Munro > Munro ->
+            New_Data = orddict:store(latest_munro, Latest_Munro, Server_Data),
+            orddict:store(munro_peers, [State#peer.peer], New_Data);
+        %% store the peers with the latest munro.
+        {ok, Munro} when Latest_Munro =:= Munro ->
+            orddict:append(munro_peers, State#peer.peer, Server_Data);
         _ ->
             Server_Data
     end;
@@ -145,12 +152,15 @@ piggyback(integrity, {State, Bin, Hash}) ->
 %% peer.
 %% @end
 update_ack_range(New_Bin, Peer_State) ->
-    New_Range = lists:filter(
-      fun(Bin) ->
-              not mtree_core:lies_in(Bin, mtree_core:bin_to_range(New_Bin))
-      end, orddict:fetch(ack_range, Peer_State)),
-
-    [New_Bin | New_Range].
+    Bin_Range = mtree_core:bin_to_range(New_Bin),
+    case orddict:find(ack_range, Peer_State) of
+        error       ->
+            [New_Bin];
+        {ok, Ack_Range} ->
+            lists:filter( fun(Bin) ->
+                                  not mtree_core:lies_in(Bin, Bin_Range)
+                          end, Ack_Range)
+    end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% @doc return list of bins to request for live stream :
@@ -162,23 +172,68 @@ get_bin_list({End_Munro, End_Munro}, {Start, End}, Acc) ->
 get_bin_list({Start_Munro, End_Munro}, {Start, End}, Acc) ->
     [_, Last] = mtree_core:bin_to_range(Start_Munro),
     New_Acc   = lists:concat([Acc, [Start_Munro | lists:seq(Start, Last, 2)]]),
-    {ok, Munro_Root} = mtree:get_next_munro(Start_Munro),
+    {ok, Munro_Root} = mtree_core:get_next_munro(Start_Munro),
     get_bin_list({Munro_Root, End_Munro}, {Last+2, End}, New_Acc).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% @doc fetch_uncles/3 : gets the required uncles for live & static stream 
+%% @doc fetch_uncles/3 : gets the required uncles for live & static stream
+%% check if the previous Leaf (ie Leaf -2) has been ACKed, if not then get
+%% all the uncles corresponding to the current leaf.
 %% @end
-%% TODO check if the previous Leaf (ie Leaf -2) has been ACKed, if not then get
-%% all the uncles corresponding to the current hash.
 fetch_uncles(static, State, Leaf) ->
-    mtree:get_uncle_hashes(State#peer.mtree, Leaf);
+    case orddict:find(ack_range, State#peer.peer_state) of
+        error ->
+            mtree:get_all_uncle_hashes(State#peer.mtree, Leaf);
+        {ok, Ack_List} ->
+            fetch_static_uncles(State#peer.mtree, Ack_List, Leaf)
+    end;
 fetch_uncles(live, State, Leaf) ->
-    mtree:get_munro_uncles(State#peer.mtree, Leaf). 
+    case orddict:find(ack_range, State#peer.peer_state) of
+        error ->
+            mtree:get_all_munro_uncles(State#peer.mtree, Leaf);
+        {ok, Ack_List} ->
+            fetch_live_uncles(State#peer.mtree, Ack_List, Leaf)
+    end.
+
+fetch_static_uncles(MTree, Ack_List, Leaf) ->
+    case in_ack_range(Leaf-2, Ack_List) of
+        true  ->
+            mtree:get_all_uncle_hashes(MTree, Leaf);
+        false ->
+            mtree:get_uncle_hashes(MTree, Leaf)
+    end.
+
+fetch_live_uncles(MTree, Ack_List, Leaf) ->
+    case in_ack_range(Leaf-2, Ack_List) of
+        true  ->
+            mtree:get_all_munro_uncles(MTree, Leaf);
+        false ->
+            mtree:get_munro_uncles(MTree, Leaf)
+    end.
+
+%% check if the leaf lies in the ACKed range of DATA.
+in_ack_range(_Leaf, []) ->
+    false;
+in_ack_range(Leaf, _Ack_List) when Leaf =< 0 ->
+    false;
+in_ack_range(Leaf, [Bin | Rest]) ->
+    case mtree_core:lies_in(Leaf, mtree_core:bin_to_range(Bin)) of
+        true  -> true;
+        false -> in_ack_range(Leaf, Rest)
+    end.
+
+%% checks if the stable munro is 0 or not
+is_stable(Server_Data) ->
+    case orddict:fetch(stable_munro, Server_Data)-1 of
+        Counter when Counter =< 0 -> true;
+        _ -> false
+    end.
 
 %% fetches keys from orddict
 fetch(Field, Payload) ->
     orddict:fetch(Field, Payload).
 
-%% remove element from the dict.
-remove(Element, Payload) ->
-    orddict:erase(Element, Payload).
+%% return ntp time
+time() ->
+    %% TODO : add the ntp module and call ntp:ask()
+    peer_core_not_implemented.

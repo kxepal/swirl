@@ -59,14 +59,8 @@ insert(Table, {Peer, State}) ->
 %% already in the tree.
 %% @end
 -spec insert_new(atom(), {string(), server()}) -> true | false.
-insert_new(Table, {Peer, Server_Type}) ->
-    peer_store:insert(Table,
-    {{Peer, Server_Type},
-     %% range : stores the range of chunks downloaded from this peer or
-     %% downloaded by this peer depending on Server_Type.
-     %% integrity : stores integrity messages from the peer untill
-     %% corresponding data packets arrive.
-     orddict:new()}).
+insert_new(Table, Peer) ->
+    peer_store:insert(Table, {Peer, orddict:new()}).
     %ets:insert_new(Table, {Bin, Hash, Data}).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
