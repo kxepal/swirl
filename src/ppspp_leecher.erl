@@ -194,24 +194,25 @@ handle_msg(_, [], State, _Reply) ->
                                               State#peer.peer_state}),
     {ok, State};
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%-----------------------------------------------------------------------------
 %% HANDSHAKE
 handle_msg(Type, [{handshake, Payload} | Rest], State, Reply) ->
     {ok, Response} = ppspp_message:handle({Type , leecher},
                                           {handshake, Payload}, State),
     handle_msg(Type, Rest, State, [Response | Reply]);
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%-----------------------------------------------------------------------------
 %% ACK
 handle_msg(Type, [{ack,_Payload} | Rest], State, Reply) ->
     ?WARN("~p ~p: unexpected ACK message ~n", [Type, leecher]),
     handle_msg(Type, Rest, State, Reply);
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%-----------------------------------------------------------------------------
 %% HAVE
 handle_msg(static, [{have, Payload} | Rest], State, Reply) ->
-    %% TODO discuss how to prepare REQUEST for DATA from multiple peers.
-    {ok, Response} = ppspp_message:handle({live, leecher},
+    %% TODO discuss how to prepare REQUEST msg to download DATA from multiple
+    %% peers.
+    {ok, Response} = ppspp_message:handle({static, leecher},
                                           {have, Payload}, State),
     handle_msg(static, Rest, State, [Response | Reply]);
 
@@ -223,7 +224,7 @@ handle_msg(live, [{have, Payload} | Rest], State, Reply) ->
                                                      {have, Payload}, State),
     handle_msg(live, Rest, New_State, [Response | Reply]);
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%-----------------------------------------------------------------------------
 %% INTEGRITY
 handle_msg(Type, [{integrity, Payload} | Rest], State, Reply) ->
     {ok, New_State} = ppspp_message:handle({Type, leecher},
@@ -239,7 +240,7 @@ handle_msg(Type, [{pex_req, _Data} | Rest], State, Reply) ->
     ?WARN("live_seeder: unexpected pex_req message ~n", []),
     handle_msg(Type, Rest, State, Reply);
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%-----------------------------------------------------------------------------
 %% Seeder should not receive signed_integrity message.
 %% TODO incomplete
 handle_msg(live, [{signed_integrity, Payload} | Rest], State, Reply) ->
@@ -251,26 +252,26 @@ handle_msg(Type, [{signed_integrity, _Data} | Rest], State, Reply) ->
     ?WARN("~p leecher: unexpected signed_integrity message ~n", [Type]),
     handle_msg(Type, Rest, State, Reply);
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%-----------------------------------------------------------------------------
 %% REQUEST
 handle_msg(Type, [{request,_Payload} | Rest], State, Reply) ->
     ?WARN("~p leecher: unexpected REQUEST message ~n", [Type]),
     handle_msg({Type, leecher}, Rest, State, Reply);
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%-----------------------------------------------------------------------------
 %% CANCEL
 %% TODO implement this
 handle_msg(Type, [{cancel, _Data} | Rest], State, Reply) ->
     ?WARN("~p leecher: unexpected CANCEL message ~n", [Type]),
     handle_msg(Type, Rest, State, Reply);
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%-----------------------------------------------------------------------------
 %% CHOKE
 handle_msg(Type, [{choke, _Data} | Rest], State, Reply) ->
     ?WARN("~p leecher: unexpected choke message ~n", [Type]),
     handle_msg(Type, Rest, State, Reply);
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%-----------------------------------------------------------------------------
 %% UNCHOKE
 %% TODO implement this
 handle_msg(Type, [{unchoke, _Data} | Rest], State, Reply) ->
@@ -284,5 +285,3 @@ handle_msg({Type, Role}, [{pex_resv6, _Data} | Rest], State, Reply) ->
 handle_msg({Type, Role}, [{pex_rescert, _Data} | Rest], State, Reply) ->
     ?WARN("live_seeder: unexpected pex_rescert message ~n", []),
     handle_msg({Type, Role}, Rest, State, Reply).
-
-

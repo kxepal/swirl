@@ -189,8 +189,6 @@ handle({live, leecher}, {have, Payload}, #peer{state=tune_in} = State) ->
     %% HAVE in live stream is piggybacked to figure out latest munro hash.
     %% TODO discuss if address of peers sending highest munro needs to be
     %% stored.
-    %% Switch from tune_in to streaming when 2/3 of the peers have replied
-    %% with HAVE messages.
     Latest_Munro  = peer_core:fetch(range, Payload),
     %% update the munro if latest munro is greater than the current one.
     Server_Data   = peer_core:piggyback(have, {State, Latest_Munro}),
@@ -212,8 +210,8 @@ handle({live, leecher}, {have, Payload}, #peer{state=tune_in} = State) ->
     end;
 
 %% TODO confirm if the expression : #peer{state=streaming} =_State will work !
-%% In case leecher is already in the streaming state any new have will be new
-%% data injected into the swarm
+%% In case leecher is already in the streaming state any new HAVE will
+%% correspond to new data injected into the swarm
 handle({live, leecher}, {have, Payload}, #peer{state=streaming} = State) ->
     New_Munro     = peer_core:fetch(range, Payload),
     {ok, REQUEST} = prepare(live, {request, New_Munro}, State),
@@ -321,9 +319,8 @@ prepare(_Type, {ack, Bin}, _State) ->
     {ok, {ack, orddict:from_list([{range, Bin}])}};
 
 %%------------------------------------------------------------------------------
-%% HAVE : {have, [{range, Bin}]
+%% HAVE : {have, [{range, Bin}]}
 prepare(static, {have,_Payload}, State) ->
-    %% {ok, Start, End} = mtree:get_data_range(State#state.mtree),
     Peaks = mtree:get_peak_hash(State#peer.mtree),
     Have  = [{have, orddict:from_list([{range, Bin}])} || {Bin, _} <- Peaks],
     {ok, Have};
@@ -361,7 +358,7 @@ prepare(_Type, {integrity, Bin, Hash}, _State) ->
 %%                                        {timestamp, Time},
 %%                                        {signature, binary}]
 prepare(live, {signed_integrity, Munro_Root}, State) ->
-    {ok, _Hash, _Data} = mtree_store:lookup(State#peer.mtree, Munro_Root),
+    {ok, _Hash, _Data}    = mtree_store:lookup(State#peer.mtree, Munro_Root),
     %% TODO : add ntp module and filter out the timestamp.
     Ntp_Timestamp         = peer_core:time(), %% not implemented yet !
     {ok, _Hash, Signture} = mtree_store:lookup(State#peer.mtree, Munro_Root),
