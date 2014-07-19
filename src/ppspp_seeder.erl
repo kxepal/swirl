@@ -127,90 +127,6 @@ handle_cast(Msg, State) ->
     %% spwan(?MODULE, handle_msg, [{Type, Role}, Msg, State, []]),
     {noreply, New_State}.
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% Handle messages.
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-handle_msg(_, [], _State, _Reply) ->
-    %% TODO send packed message to the listener
-    %% lists:reverse(lists:flatten(Reply)).
-    % ppspp_datagram:pack(Reply)
-    % put the peer_state back into the ETS table.
-    ok;
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% HANDSHAKE : returns [HANDSHAKE, HAVE, HAVE ...]
-%% Payload is expected to be an orddict.
-handle_msg(Type, [{handshake, Payload} | Rest], State, Reply) ->
-    {ok, Response} = ppspp_message:handle({Type, seeder},
-                                          {handshake, Payload}, State),
-    handle_msg(Type, Rest, State, [Response | Reply]);
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% ACK : updates the state of the peer in State_Table for DATA received
-handle_msg(Type, [{ack, Payload} | Rest], State, Reply) ->
-    {ok, New_State} = ppspp_message:handle({Type, seeder},
-                                           {ack, Payload}, State),
-    handle_msg(Type, Rest, New_State, Reply);
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% HAVE : seeder should not receive HAVE messages
-handle_msg(Type, [{have,_Payload} | _Rest], State, _Reply) ->
-    ?WARN("~p ~p: unexpected HAVE message ~n", [Type, seeder]),
-    {noreply, State};
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% INTEGRITY : should not be received,
-handle_msg(Type, [{integrity, _Data} | Rest], State, Reply) ->
-    ?WARN("~p ~p: unexpected INTEGRITY message ~n", [Type, seeder]),
-    handle_msg(Type, Rest, State, Reply);
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% NO implementation
-handle_msg(Type, [{pex_resv4, _Data} | Rest], State, Reply) ->
-    ?WARN("~p ~p: no implemention for PEX_RESV4 message ~n", [Type, seeder]),
-    handle_msg(Type, Rest, State, Reply);
-handle_msg(Type, [{pex_req, _Data} | Rest], State, Reply) ->
-    ?WARN("~p ~p: no implementation for PEX_REQ message ~n", [Type, seeder]),
-    handle_msg(Type, Rest, State, Reply);
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% SIGNED_INTEGRITY : should not be received 
-handle_msg(Type, [{signed_integrity, _Data} | Rest], State, Reply) ->
-    ?WARN("~p ~p: unexpected SIGNED_INTEGRITY message ~n", [Type, seeder]),
-    handle_msg(Type, Rest, State, Reply);
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% REQUEST
-handle_msg(Type, [{request, Payload} | Rest], State, Reply) ->
-    {ok, Response} = ppspp_message:handle({Type, seeder},
-                                          {request, Payload}, State) ,
-    handle_msg(Type, Rest, State, [Response | Reply]);
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% CANCEL : TODO kill the spawn process serving the DATA request for the peer.
-handle_msg({_Type, _Role}, [{cancel, _Data} | _Rest], State, _Reply) ->
-    {noreply, State};
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% CHOKE : should not be received .
-handle_msg(Type, [{choke, _Data} | Rest], State, Reply) ->
-    ?WARN("~p ~p: unexpected choke message ~n", [Type, seeder]),
-    handle_msg(Type, Rest, State, Reply);
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% UNCHOKE : should not be received .
-handle_msg(Type, [{unchoke, _Data} | Rest], State, Reply) ->
-    ?WARN("live_seeder: unexpected UNCHOKE message ~n", []),
-    handle_msg(Type, Rest, State, Reply);
-
-%% currently no implementation
-handle_msg(Type, [{pex_resv6, _Data} | Rest], State, Reply) ->
-    ?WARN("~p ~p: unexpected PEX_RESV6 message ~n", [Type, seeder]),
-    handle_msg(Type, Rest, State, Reply);
-handle_msg(Type, [{pex_rescert, _Data} | Rest], State, Reply) ->
-    ?WARN("~p ~p: unexpected PEX_RESCERT message ~n", [Type, seeder]),
-    handle_msg(Type, Rest, State, Reply).
-
 %%--------------------------------------------------------------------
 %% @doc
 %% Handling all non call/cast messages
@@ -251,3 +167,87 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Handle messages.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+handle_msg(_, [], _State, _Reply) ->
+    %% TODO send packed message to the listener
+    %% lists:reverse(lists:flatten(Reply)).
+    % ppspp_datagram:pack(Reply)
+    % put the peer_state back into the ETS table.
+    ok;
+
+%%-----------------------------------------------------------------------------
+%% HANDSHAKE : returns [HANDSHAKE, HAVE, HAVE ...]
+%% Payload is expected to be an orddict.
+handle_msg(Type, [{handshake, Payload} | Rest], State, Reply) ->
+    {ok, Response} = ppspp_message:handle({Type, seeder},
+                                          {handshake, Payload}, State),
+    handle_msg(Type, Rest, State, [Response | Reply]);
+
+%%-----------------------------------------------------------------------------
+%% ACK : updates the state of the peer in State_Table for DATA received
+handle_msg(Type, [{ack, Payload} | Rest], State, Reply) ->
+    {ok, New_State} = ppspp_message:handle({Type, seeder},
+                                           {ack, Payload}, State),
+    handle_msg(Type, Rest, New_State, Reply);
+
+%%-----------------------------------------------------------------------------
+%% HAVE : seeder should not receive HAVE messages
+handle_msg(Type, [{have,_Payload} | _Rest], State, _Reply) ->
+    ?WARN("~p ~p: unexpected HAVE message ~n", [Type, seeder]),
+    {noreply, State};
+
+%%-----------------------------------------------------------------------------
+%% INTEGRITY : should not be received,
+handle_msg(Type, [{integrity, _Data} | Rest], State, Reply) ->
+    ?WARN("~p ~p: unexpected INTEGRITY message ~n", [Type, seeder]),
+    handle_msg(Type, Rest, State, Reply);
+
+%%-----------------------------------------------------------------------------
+%% NO implementation
+handle_msg(Type, [{pex_resv4, _Data} | Rest], State, Reply) ->
+    ?WARN("~p ~p: no implemention for PEX_RESV4 message ~n", [Type, seeder]),
+    handle_msg(Type, Rest, State, Reply);
+handle_msg(Type, [{pex_req, _Data} | Rest], State, Reply) ->
+    ?WARN("~p ~p: no implementation for PEX_REQ message ~n", [Type, seeder]),
+    handle_msg(Type, Rest, State, Reply);
+
+%%-----------------------------------------------------------------------------
+%% SIGNED_INTEGRITY : should not be received 
+handle_msg(Type, [{signed_integrity, _Data} | Rest], State, Reply) ->
+    ?WARN("~p ~p: unexpected SIGNED_INTEGRITY message ~n", [Type, seeder]),
+    handle_msg(Type, Rest, State, Reply);
+
+%%-----------------------------------------------------------------------------
+%% REQUEST
+handle_msg(Type, [{request, Payload} | Rest], State, Reply) ->
+    {ok, Response} = ppspp_message:handle({Type, seeder},
+                                          {request, Payload}, State) ,
+    handle_msg(Type, Rest, State, [Response | Reply]);
+
+%%-----------------------------------------------------------------------------
+%% CANCEL : TODO kill the spawn process serving the DATA request for the peer.
+handle_msg({_Type, _Role}, [{cancel, _Data} | _Rest], State, _Reply) ->
+    {noreply, State};
+
+%%-----------------------------------------------------------------------------
+%% CHOKE : should not be received .
+handle_msg(Type, [{choke, _Data} | Rest], State, Reply) ->
+    ?WARN("~p ~p: unexpected choke message ~n", [Type, seeder]),
+    handle_msg(Type, Rest, State, Reply);
+
+%%-----------------------------------------------------------------------------
+%% UNCHOKE : should not be received .
+handle_msg(Type, [{unchoke, _Data} | Rest], State, Reply) ->
+    ?WARN("live_seeder: unexpected UNCHOKE message ~n", []),
+    handle_msg(Type, Rest, State, Reply);
+
+%% currently no implementation
+handle_msg(Type, [{pex_resv6, _Data} | Rest], State, Reply) ->
+    ?WARN("~p ~p: unexpected PEX_RESV6 message ~n", [Type, seeder]),
+    handle_msg(Type, Rest, State, Reply);
+handle_msg(Type, [{pex_rescert, _Data} | Rest], State, Reply) ->
+    ?WARN("~p ~p: unexpected PEX_RESCERT message ~n", [Type, seeder]),
+    handle_msg(Type, Rest, State, Reply).

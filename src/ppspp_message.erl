@@ -227,14 +227,15 @@ handle({static, leecher}, {integrity, _Payload},_State) ->
     ok;
 
 handle({live, leecher}, {integrity, Payload}, State) ->
-    Bin             = peer_core:fetch(range, Payload),
-    Hash            = peer_core:fetch(hash, Payload),
-    New_Peer_State  = peer_core:piggyback(integrity, {State, Bin, Hash}),
+    Bin            = peer_core:fetch(range, Payload),
+    Hash           = peer_core:fetch(hash, Payload),
+    New_Peer_State = peer_core:piggyback(integrity, {State, Bin, Hash}),
     {ok, State#peer{peer_state = New_Peer_State}};
 
 %%------------------------------------------------------------------------------
 %% SIGNED_INTEGRITY
 handle({live, leecher}, {signed_integrity, Payload}, State) ->
+    %% TODO reject SIGNED_INTEGRITY if ntp time is too late.
     Munro_Root      = peer_core:fetch(range, Payload),
     Peer_State      = State#peer.peer_state,
     {_, Munro_Hash} = lists:keyfind(Munro_Root, 1, orddict:find(integrity,
@@ -266,7 +267,7 @@ handle({live, _}, {request, Payload}, State) ->
     %% prepare list of requested chunk IDs with their corresponding Munro_Root.
     {ok, Request_List} = peer_core:get_bin_list({Start_Munro, End_Munro},
                                                 {Start, End}, []),
-    %% Request_List : [Munro_Root1, bins ... , Munro_Root2, bins ..]
+    %% Request_List: [Munro_Root1, bins ... , Munro_Root2, bins ..]
     %% the bins that follow the Munro_Root lie in the range of the Munro_Root.
     {ok, process_request({live, State}, Request_List, [])};
 

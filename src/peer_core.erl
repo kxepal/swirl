@@ -125,18 +125,19 @@ get_peer_state(Table, Peer) ->
 %% @end
 piggyback(have, {State, Latest_Munro}) ->
     Server_Data = State#peer.server_data,
+    Peer        = State#peer.peer,
     case orddict:find(latest_munro, Server_Data) of
         %% add "have" Payload if not present
         error   ->
             New_Data = orddict:store(latest_munro, Latest_Munro, Server_Data),
-            orddict:store(munro_peers, [State#peer.peer], New_Data);
+            orddict:store(munro_peers, [Peer], New_Data);
         %% if Latest munro is more recent then overite the previous munro
         {ok, Munro} when Latest_Munro > Munro ->
             New_Data = orddict:store(latest_munro, Latest_Munro, Server_Data),
-            orddict:store(munro_peers, [State#peer.peer], New_Data);
+            orddict:store(munro_peers, [Peer], New_Data);
         %% store the peers with the latest munro.
         {ok, Munro} when Latest_Munro =:= Munro ->
-            orddict:append(munro_peers, State#peer.peer, Server_Data);
+            orddict:append(munro_peers, Peer, Server_Data);
         _ ->
             Server_Data
     end;
