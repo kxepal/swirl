@@ -18,7 +18,7 @@
 %% @doc This module implements storage API for merkle trees.
 %% <p> API for merkle hash tree </p>
 %% @end
--module(peer_state).
+-module(peer_store).
 
 -type peer()  :: {string(), seeder | leecher}.
 -type state() :: orddict:orddict().

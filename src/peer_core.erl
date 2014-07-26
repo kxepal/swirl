@@ -104,7 +104,7 @@ update_state(Server_Type, Msg, State) ->
     {endpoint, Address} = lists:keyfind(endpoint, orddict:find(peer, Msg)),
     %%
     Peer_State = get_peer_state(State#peer.peer_table, {Address, Server_Type}),
-    New_State  = State#peer{peer={Address, Server_Type}, peer_state=Peer_State},
+    New_State  = State#peer{peer={Address, Server_Type},peer_state=Peer_State},
     {ok, New_State}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -181,46 +181,47 @@ get_bin_list({Start_Munro, End_Munro}, {Start, End}, Acc) ->
 %% check if the previous Leaf (ie Leaf -2) has been ACKed, if not then get
 %% all the uncles corresponding to the current leaf.
 %% @end
-fetch_uncles(static, State, Leaf) ->
-    case orddict:find(ack_range, State#peer.peer_state) of
-        error ->
-            mtree:get_all_uncle_hashes(State#peer.mtree, Leaf);
-        {ok, Ack_List} ->
-            fetch_static_uncles(State#peer.mtree, Ack_List, Leaf)
-    end;
-fetch_uncles(live, State, Leaf) ->
-    case orddict:find(ack_range, State#peer.peer_state) of
-        error ->
-            mtree:get_all_munro_uncles(State#peer.mtree, Leaf);
-        {ok, Ack_List} ->
-            fetch_live_uncles(State#peer.mtree, Ack_List, Leaf)
-    end.
+fetch_uncles(Type, State, Leaf) ->
+    Ack_Range = case orddict:find(ack_range, State#peer.peer_state) of
+                    error -> [];
+                    {ok, Ack_List} -> Ack_List
+                end,
+    Req_Range = case orddict:find(req_range, State#peer.peer_state) of
+                    error -> [];
+                    {ok, Req_List} -> Req_List
+                end,
+    fetch_uncles(Type, State#peer.mtree,
+                 lists:merge([Ack_Range, Req_Range]), Leaf).
 
-fetch_static_uncles(MTree, Ack_List, Leaf) ->
-    case in_ack_range(Leaf-2, Ack_List) of
+fetch_uncles(static, MTree, [], Leaf) ->
+    mtree:get_all_uncle_hashes(MTree, Leaf);
+fetch_uncles(static, MTree, List, Leaf) ->
+    case in_bin_list(Leaf-2, List) of
         true  ->
             mtree:get_all_uncle_hashes(MTree, Leaf);
         false ->
             mtree:get_uncle_hashes(MTree, Leaf)
-    end.
+    end;
 
-fetch_live_uncles(MTree, Ack_List, Leaf) ->
-    case in_ack_range(Leaf-2, Ack_List) of
+fetch_uncles(live, MTree, [], Leaf) ->
+    mtree:get_all_munro_uncles(MTree, Leaf);
+fetch_uncles(live, MTree, List, Leaf) ->
+    case in_bin_list(Leaf-2, List) of
         true  ->
-            mtree:get_all_munro_uncles(MTree, Leaf);
+            mtree:get_munro_uncles(MTree, Leaf);
         false ->
-            mtree:get_munro_uncles(MTree, Leaf)
+            mtree:get_all_munro_uncles(MTree, Leaf)
     end.
 
-%% check if the leaf lies in the ACKed range of DATA.
-in_ack_range(_Leaf, []) ->
+%% check if the leaf lies in the Bin list.
+in_bin_list(Leaf, _Ack_List) when Leaf =< 0 ->
     false;
-in_ack_range(Leaf, _Ack_List) when Leaf =< 0 ->
+in_bin_list(_Leaf, []) ->
     false;
-in_ack_range(Leaf, [Bin | Rest]) ->
+in_bin_list(Leaf, [Bin | Rest]) ->
     case mtree_core:lies_in(Leaf, mtree_core:bin_to_range(Bin)) of
         true  -> true;
-        false -> in_ack_range(Leaf, Rest)
+        false -> in_bin_list(Leaf, Rest)
     end.
 
 %% checks if the stable munro is 0 or not

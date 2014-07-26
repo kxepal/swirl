@@ -153,7 +153,7 @@ parse(_, _Rest) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 %%-----------------------------------------------------------------------------
-%% HANDSHAKE
+%% HANDSHAKE    TESTED.
 %% The payload of the HANDSHAKE message is a channel ID (see Section 3.11) and
 %% a sequence of protocol options.  Example options are the content integrity
 %% protection scheme used and an option to specify the swarm identifier.  The
@@ -180,7 +180,7 @@ handle(_Type_Role, {ack, Payload}, State) ->
     {ok, State#peer{peer_state=New_Peer_State}};
 
 %%------------------------------------------------------------------------------
-%% HAVE
+%% HAVE     TESTED
 handle({static, leecher}, {have, _Payload},_State) ->
     %% TODO : discuss how to request RANGE
     ok;
@@ -194,8 +194,7 @@ handle({live, leecher}, {have, Payload}, #peer{state=tune_in} = State) ->
     Server_Data   = peer_core:piggyback(have, {State, Latest_Munro}),
     case peer_core:is_stable(Server_Data) of
         true  ->
-            New_Server_Data = orddict:erase(stable_munro,
-                                            State#peer.server_data),
+            New_Server_Data = orddict:erase(stable_munro, Server_Data),
             %% prepare request message for the highest munro
             {ok, REQUEST} = prepare(live,
                                     {request,
@@ -218,7 +217,7 @@ handle({live, leecher}, {have, Payload}, #peer{state=streaming} = State) ->
     {ok, State, REQUEST};
 
 %%------------------------------------------------------------------------------
-%% INTEGRITY
+%% INTEGRITY    TESTED
 %% TODO figure out how to handle integrity messages. The leecher will recevive
 %% integrity message which can span multiple chunks so we need to piggybank
 %% integrity messages untill the right DATA packet arrives DOUBT : how will
@@ -254,7 +253,7 @@ handle({live, leecher}, {signed_integrity, Payload}, State) ->
     {ok, State#peer{peer_state = New_Peer_State}};
 
 %%------------------------------------------------------------------------------
-%% REQUEST
+%% REQUEST      TESTED
 handle({static, _}, {request, [_Start, _End]},_State) ->
     %% TODO implement static code.
     %handle_REQ_List({static, State}, REQ_List, []);
@@ -278,7 +277,7 @@ handle(_Type_Role, Message,_State) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% PREPARE MESSAGES
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%
+%% STATUS : tested.
 %% HANDSHAKE message is of the sort :
 %% {handshake, [{channel, [{source, Channel_Id}, {destination, Channel_Id}]},
 %%              {options, [{}, {}, ...]}]
@@ -358,39 +357,50 @@ prepare(_Type, {integrity, Bin, Hash}, _State) ->
 %% SIGNED_INTEGRITY : {signed_integrity, [{range, Bin},
 %%                                        {timestamp, Time},
 %%                                        {signature, binary}]
-prepare(live, {signed_integrity, Munro_Root}, State) ->
-    {ok, _Hash, _Data}    = mtree_store:lookup(State#peer.mtree, Munro_Root),
+%% NOTE : Bin MUST be either leaf or munro 
+prepare(live, {signed_integrity, Leaf}, State) when Leaf rem 2 =:= 0 ->
+    Munro_Root    = mtree_core:get_munro_root(Leaf),
     %% TODO : add ntp module and filter out the timestamp.
     Ntp_Timestamp         = peer_core:time(), %% not implemented yet !
     {ok, _Hash, Signture} = mtree_store:lookup(State#peer.mtree, Munro_Root),
     {ok, {data, orddict:from_list([{range, Munro_Root},
                                    {timestamp, Ntp_Timestamp},
-                                   {signature, Signture}])}}.
+                                   {signature, Signture}])}};
+%% CAUTION only Munro_Root should be sent here !
+prepare(live, {signed_integrity, Munro_Root}, State) ->
+    Ntp_Timestamp         = peer_core:time(), %% not implemented yet !
+    {ok, _Hash, Signture} = mtree_store:lookup(State#peer.mtree, Munro_Root),
+    {ok, {signed_integrity, orddict:from_list([{range, Munro_Root},
+                                               {timestamp, Ntp_Timestamp},
+                                               {signature, Signture}])}}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% LOCAL INTERNAL FUNCTIONs
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% @doc handle_request/3 : REQ_List and return value will be as follows
+%% @doc process_request/3 : REQ_List and return value will be as follows
 %% REQ_List (live): [Munro_Root1, Leaf_bin ... , Munro_Root2, Leaf_bins ..]
 %% Returns (live) : [INTEGRITY, SIGNED_INTEGRITY, INTEGRITY, DATA, ..] messages
 %% REQ_List (static) : [Leaf_bin, ...]
 %% Returns (static)  : [INTEGRITY, DATA, INTEGRITY, DATA, ...] messages
-%% @end
+%% @end 
 process_request(_, [], Acc) ->
     lists:reverse(Acc);
 process_request({Type, State}, [Leaf | Rest], Acc) when Leaf rem 2 =:= 0 ->
     %% get the uncles based on the previous ACKs
-    Uncle_Hashes = peer_core:fetch_uncles(Type, {State, Leaf}),
+    Uncle_Hashes = peer_core:fetch_uncles(Type, State, Leaf),
     INTEGRITY    =
-    lists:map(
+    lists:reverse(lists:map(
       fun({Uncle, Hash}) ->
             {ok, Integrity} = prepare(live, {integrity, Uncle, Hash}, State),
             Integrity
-      end, Uncle_Hashes),
-    {ok, DATA}   = prepare(live, {data, Leaf}, State),
-    process_request({live, State}, Rest, lists:flatten([DATA,INTEGRITY | Acc]));
+      end, Uncle_Hashes)),
+    {ok, DATA}     = prepare(live, {data, Leaf}, State),
+    Response       = lists:flatten([DATA,INTEGRITY | Acc]),
+    New_Peer_State = orddict:append(req_range, Leaf, State#peer.peer_state),
+    New_State      = State#peer{peer_state=New_Peer_State},
+    process_request({live, New_State}, Rest, Response);
 process_request({live, State}, [Munro_Root | Rest], Acc) ->
     {ok, INTEGRITY}        = prepare(live, {integrity, Munro_Root}, State),
     {ok, SIGNED_INTEGRITY} = prepare(live, {signed_integrity,Munro_Root},State),

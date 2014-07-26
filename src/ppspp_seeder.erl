@@ -17,7 +17,7 @@
 %% <p>description goes here</p>
 %% @end
 
--module(live_seeder).
+-module(ppspp_seeder).
 
 -behaviour(gen_server).
 
@@ -60,7 +60,6 @@ start_link(Args, Swarm_Options) ->
     gen_server:start_link({local, ?MODULE}, ?MODULE,
                           [Args, Swarm_Options], []).
 
-
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
@@ -98,6 +97,9 @@ handle_call({newData, _Data}, _From, #peer{type=injector} = _State) ->
     %% and then create a new subtree and declare the new packets using HAVE
     %% messages in the swarm.
     ok;
+handle_call(terminate, _From, State) ->
+    {stop, normal, ok, State};
+
 handle_call(Message, _From, State) ->
     ?WARN("peer: unexpected call: ~p~n", [Message]),
     {stop, {error, {unknown_call, Message}}, State}.
